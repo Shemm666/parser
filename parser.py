@@ -5,14 +5,13 @@ import requests
 from bs4 import BeautifulSoup
 #import certifi
 import pandas as pd
-import selenium
+import selenium 
 import telebot
 from threading import Thread
 from selenium import webdriver
 import configparser
 from time import sleep
 import geckodriver_autoinstaller
-import urllib3
 import json
 from datetime import datetime as dt
 from datetime import timedelta
@@ -21,7 +20,8 @@ geckodriver_autoinstaller.install()
 from selenium.webdriver.firefox.options import Options
 from telepot import Bot
 config = configparser.ConfigParser()
-config.read("/home/user/parser/conf.ini")
+path_to_config='conf.ini'
+config.read(path_to_config)
 search_url='https://goszakupki.by/tenders/posted?TendersSearch%5Bnum%5D=&TendersSearch%5Btext%5D={}&TendersSearch%5Bunp%5D=&TendersSearch%5Bcustomer_text%5D=&TendersSearch%5BunpParticipant%5D=&TendersSearch%5Bparticipant_text%5D=&TendersSearch%5Bprice_from%5D=&TendersSearch%5Bprice_to%5D=&TendersSearch%5Bcreated_from%5D=&TendersSearch%5Bcreated_to%5D=&TendersSearch%5Brequest_end_from%5D=&TendersSearch%5Brequest_end_to%5D=&TendersSearch%5Bauction_date_from%5D=&TendersSearch%5Bauction_date_to%5D=&TendersSearch%5Bindustry%5D={}&TendersSearch%5Btype%5D=&TendersSearch%5Bstatus%5D=&TendersSearch%5Bstatus%5D%5B%5D=Submission&TendersSearch%5Bstatus%5D%5B%5D=WaitingForBargain&TendersSearch%5Bstatus%5D%5B%5D=Examination&TendersSearch%5Bstatus%5D%5B%5D=Bargain&TendersSearch%5Bstatus%5D%5B%5D=Quantification&TendersSearch%5Bstatus%5D%5B%5D=Paused&TendersSearch%5Bstatus%5D%5B%5D=Signing&TendersSearch%5Bstatus%5D%5B%5D=Preselection&TendersSearch%5Bstatus%5D%5B%5D=DocsApproval&TendersSearch%5Bregion%5D=&TendersSearch%5Bappeal%5D=&page='
 ch_bot_token=config['telegram_params']['ch_bot_token']
 bot_token=config['telegram_params']['main_bot_token']
@@ -62,7 +62,7 @@ from selenium.common.exceptions import TimeoutException
 #         for parent in soup.find_all('tr')[1:]:
 #             child=parent.find_all('td')            
 #             voted_new.append([text.text for text in child]+[parent.find('a').text]+['https://goszakupki.by/'+parent.find('a')['href']])            
-#     return pd.DataFrame(voted_new, columns=['№', 'Заявитель', 'Вид закупки', 'стадия', 'срок подачи','сумма','предмет закупки' ,'http' ])
+#     return pd.DataFrame(voted_new, columns=['№', '**Заявитель**', 'Вид закупки', 'стадия', 'срок подачи','сумма','**предмет закупки**' ,'http' ])
     
         
 url = 'http://goszakupki.by/tenders/posted?page='
@@ -85,7 +85,8 @@ class ParseThread(Thread):
         self.driver=driver        
         self.bot=bot        
         self.sleep_time=sleep_time
-        self.rivals_json=rivals_json        
+        self.rivals_json=rivals_json 
+        self.stop_words=[word.strip() for word in config['search_params']['stop_words'].split(',')]
         self.stop_plan=int(config['pur_plan_stop']['stop_plan'])        
         if os.path.exists(rivals_json):
             with open(rivals_json) as f:
@@ -94,6 +95,7 @@ class ParseThread(Thread):
             d={}
         self.rivals_dict=defaultdict(dict, d)
         self.ch_json_name=ch_json
+        
         
     def purch_plan_parse(self, organisations):
         """парсер планов по закупкам
@@ -126,14 +128,14 @@ class ParseThread(Thread):
         stop_plan=max(search_res_list, key=lambda x: x[0])[0]
         self.stop_plan=int(stop_plan)
         config.set('pur_plan_stop', 'stop_plan', str(stop_plan))
-        with open('/home/user/parser/conf.ini', 'w') as configfile:
+        with open(path_to_config, 'w') as configfile:
             config.write(configfile)
         
         
         
     def soup_from_url(self, url):
         driver.get(url)
-        return BeautifulSoup(self.driver.page_source, features="html.parser")    
+        return BeautifulSoup(self.driver.page_source)    
     
     def get_parsed(self, format_key, value):        
         i=0
@@ -143,17 +145,20 @@ class ParseThread(Thread):
         value= '%'.join(str(value.encode("utf-8"))[2:-1].upper().split('\\X')) if format_key==0 else '%2C'.join(map(str, value))
         format_params_dic[format_key]=value
         base_url=self.search_url.format(format_params_dic[0], format_params_dic[1])
-        for i in range(1, int(self.soup_from_url(base_url).find('li',class_="last").text)+1):
+        soup=self.soup_from_url(base_url)
+        last_page=int(soup.find('li',class_="last").text)+1 if soup.find('li',class_="last") else 1 
+        for i in range(1, last_page):
             search_url=base_url+str(i)
             soup=self.soup_from_url(search_url)
-            for parent in soup.find_all('tr')[1:]:
-                child=parent.find_all('td')            
-                voted_new.append([text.text for text in child]+[parent.find('a').text]+['https://goszakupki.by/'+parent.find('a')['href']])            
-        return pd.DataFrame(voted_new, columns=['№', 'Заявитель', 'Вид закупки', 'стадия', 'срок подачи','сумма','предмет закупки' ,'http' ])
+            for parent in soup.find_all('tr')[1:]:               
+                if not any([True for word in self.stop_words if word in parent.find('a').text]):
+                    child=parent.find_all('td')            
+                    voted_new.append([text.text for text in child]+[parent.find('a').text]+['https://goszakupki.by'+parent.find('a')['href']])            
+        return pd.DataFrame(voted_new, columns=['№', '*Заявитель*', 'Вид закупки', 'стадия', 'срок подачи','сумма','*предмет закупки*' ,'http' ])
     
     def send_mess(self,u_id, msg):
         for id_ in u_id:
-            self.bot.sendMessage(id_, msg)
+            self.bot.sendMessage(id_, msg, parse_mode= 'Markdown')
             
     def observe_rivals(self, rival):
         rivals_result=pd.DataFrame(columns=['№','Заявитель', 'Предмет закупки', 'http'])
@@ -166,6 +171,9 @@ class ParseThread(Thread):
         last_page=int(soup.find('li',class_="last").text) if soup.find('li',class_="last") else 1
         while i<=last_page:
             page_soup=self.soup_from_url(url+'&page={}'.format(str(i))).find_all('tr')[1:]
+            if page_soup[0].text=='Ничего не найдено.':
+                break
+
             for auc in page_soup:
                 if auc.find('td').text!=rival_stop:
                     result_list.append([auc.find_all('td')[0].text, auc.find_all('td')[1].text, auc.find('a').text, 'https://goszakupki.by{}'.format(auc.find('a')['href'])])
@@ -182,20 +190,22 @@ class ParseThread(Thread):
     def run(self):
         while True:
             global config
+            self.stop_words=[word.strip() for word in config['search_params']['stop_words'].split(',')]
             key_words_list=[word.strip() for word in config['search_params']['key_words'].split(',')]
             topics_list=[[topic.strip() for topic in config['search_params']['topics'].split(',')]]
             search_dic={}
+            
             search_dic[0]=key_words_list
-            search_dic[1]=topics_list
-            users_to_send=config['telegram_params']['users_to_send'].split(',')
+            #search_dic[1]=topics_list
+            users_to_send=[u.strip() for u in config['telegram_params']['users_to_send'].split(',')]
             organisations=[org.strip() for org in config['organisations']['organisations'].split(',')]
             rivals=[rival.strip() for rival in config['rivals']['rivals'].split(',')]
             if os.path.exists(self.ch_json_name):
                 with open(self.ch_json_name) as f:
                     ch_dict=json.load(f)
             else:        
-                ch_dict=defaultdict(0)
-            search_result_df=pd.DataFrame(columns=['№', 'Заявитель', 'Вид закупки', 'стадия', 'срок подачи', 'сумма','предмет закупки' ,'http' ])
+                ch_dict=defaultdict(dict)
+            search_result_df=pd.DataFrame(columns=['№', '*Заявитель*', 'Вид закупки', 'стадия', 'срок подачи', 'сумма','*предмет закупки*' ,'http' ])
             try:
                 for key, value in search_dic.items():
                     k=key
@@ -221,13 +231,11 @@ class ParseThread(Thread):
                         with open(self.rivals_json, 'w') as fp:
                             json.dump(self.rivals_dict, fp, ensure_ascii=False)
                             
-                        
+                self.send_mess(users_to_send, 'working')       
                     
             except TimeoutException:
                 print('e')
                 next
-            except urllib3.exceptions.ReadTimeoutError:
-                pass
             except socket.timeout:
                 time.sleep(5) 
                 print('socket.timeout')
@@ -241,14 +249,25 @@ class GetMess(Thread):
     """Номер интересующего аукциона принимается обработчиком сообщений
     бота и сохраняется в сет интересующих аукционов"""
     def __init__(self, token):
-        Thread.__init__(self)
+        Thread.__init__(self)        
+        self.bot=telebot.TeleBot(token)
         
-        self.bot=telebot.TeleBot(bot_token)        
+        @self.bot.message_handler(commands=['start', 'help'])
+        def help(message):    
+            self.bot.reply_to(message, 'Выводит появляющиеся аукционы по заданным ключевым словам и отраслям промышленности, сохраняет засвеченные документы по интересующим аукционам,\
+				выводит обновления для отслеживаемых аукционов- *для отслеживания кидаем в бота цифрами кода аукциона*,  отслеживает появление конкурентов в области отслеживания для аукционов которые было\
+				решено не отслеживать', parse_mode= 'Markdown')
+
         @self.bot.message_handler(content_types=["text"])        
-        def text(message):
+        def text(message):            
             global set_to_observe
-            set_to_observe.add(message.text)
-            print(set_to_observe)
+            try:
+                if len(message.text)!=10:
+                    raise ValueError()
+                else:
+                    set_to_observe.add(message.text)
+            except ValueError:
+                self.bot.reply_to(message, 'проверьте корректность номера аукциона, требуется 10 цифр без auc')
 
     def run(self):
         self.bot.polling(none_stop=True, timeout=100)
@@ -277,7 +296,7 @@ class ChangeControl(Thread):
         
     def soup_from_url(self, url):
         self.driver.get(url)
-        soup=BeautifulSoup(self.driver.page_source, features="html.parser")
+        soup=BeautifulSoup(self.driver.page_source)
         
         return soup
     
@@ -318,7 +337,9 @@ class ChangeControl(Thread):
             response = requests.get('https://goszakupki.by'+ref, headers={"User-Agent":"Mozilla/5.0"})      
             file.write(response.content)
     
-    def get_docs(self, soup_detailed, auc):        
+    def get_docs(self, soup_detailed, auc): 
+        global config
+        users_to_send=config['telegram_params']['users_to_send'].split(',')
         href=[ref['href'] for ref in soup_detailed.find_all('a') if ref.text.strip()=='Предложения участников размещены в открытом доступе']
         if href:
             oparts=self.soup_from_url('https://goszakupki.by'+href[0])
@@ -332,7 +353,7 @@ class ChangeControl(Thread):
                     os.makedirs(directory, exist_ok=True)
                     for link in links:
                         self.save_file(*link, directory)
-                    self.send_mess(self.u_id, 'сохранены документы аукцион {} {} участник {}'.format(auc, 'https://goszakupki.by'+href[0], name))
+                    self.send_mess(users_to_send, 'сохранены документы аукцион {} {} участник {}'.format(auc, 'https://goszakupki.by'+href[0], name))
             self.ddict[auc]['docs_saved']=True
                     
         
@@ -384,21 +405,65 @@ class ChangeControl(Thread):
                             self.save_json(self.ddict, self.dictname)
             except socket.timeout:                
                 print('socket.timeout')
-            except urllib3.exceptions.ReadTimeoutError:
-                pass
-            self.sleep_till=self.sleep_till+timedelta(minutes=3)
+                self.sleep_till=self.sleep_till+timedelta(minutes=3)
             sleep(5)
             
-
+        
+class ChangeConfig(Thread):    
+    def __init__(self):
+        Thread.__init__(self) 
+        token=config['telegram_params']['config_bot_token']
+        self.bot=telebot.TeleBot(token)        
+        @self.bot.message_handler(commands=['start', 'help'])
+        def help(message):    
+            self.bot.reply_to(message, 'operation/param/value-через запятую, operation:list, add, del, param: organisations-список организаций для монитринга планов, users_to_send, key_words-ключевые слова\
+            для формирования поиска, topics-области промышленности, stop_words-исключаемые слова, rivals-УНП конкурентов, list оставляем третий параметр пустой.\
+                         Например add/key_words/ex1,ex2')
+        @self.bot.message_handler(content_types=["text"])
+        def text(message):
+            global config
+            params_list=message.text.split('/')
+            if params_list[0] not in ['list', 'add', 'del']:
+                self.bot.reply_to(message, 'неверный первый параметр, справка /help')
+                self.bot.reply_to(message, 'неверный первый параметр, справка /help')
+            elif params_list[1] not in ['organisations', 'users_to_send', 'key_words', 'topics', 'rivals']:
+                self.bot.reply_to(message, 'неверный второй параметр, справка /help')
+            elif params_list[0]=='list':
+                self.bot.reply_to(message, config.get([s for s in config.sections() if config.has_option(s, params_list[1])][0], params_list[1]))
+            elif params_list[0]=='add':
+                section=[s for s in config.sections() if config.has_option(s, params_list[1])][0]
+                conf_old=set([c.strip() for c in config.get(section, params_list[1]).split(',')])
+                config.set(section, params_list[1], ','.join(conf_old.union(set([elem.strip() for elem in params_list[2].split(',')]))))
+                with open(path_to_config, 'w') as configfile:
+                        config.write(configfile)
+            elif params_list[0]=='del':
+                section=[s for s in config.sections() if config.has_option(s, params_list[1])][0]
+                section=[s for s in config.sections() if config.has_option(s, params_list[1])][0]
+                conf_old=[c.strip() for c in config.get(section, params_list[1]).split(',')]
+                try:
+                    for elem in [elem.strip() for elem in params_list[2].split(',')]:
+                        if not elem in conf_old:
+                            raise ValueError()
+                    config.set(section, params_list[1], ','.join([elem for elem in conf_old if elem not in [elem.strip() for elem in params_list[2].split(',')]]))
+                    with open(path_to_config, 'w') as configfile:
+                        config.write(configfile)
+                except ValueError:
+                    print('Значение {} не в параметрах'.format(elem))
+    def run(self):
+        self.bot.polling(none_stop=True, timeout=100)
+            
 set_to_observe=set()
 cc=ChangeControl('jdict.json', ch_bot_token, driver2)
 getm=GetMess(bot_token)
 getm.start()
 cc.start()
-auction_parse_thread=ParseThread(search_url, 'story.csv', driver, telegrambot,  600, 'rivals.json', 'jdict.json')
+auction_parse_thread=ParseThread(search_url, 'story.csv', driver, telegrambot,  3600, 'rivals.json', 'jdict.json')
 auction_parse_thread.start()
-
-while True:    
+c_config=ChangeConfig()
+c_config.start()
+while True: 
+    config.read(path_to_config)
+    search_word=[word.strip() for word in config['search_params']['key_words'].split(',')]
     if not cc.is_alive():
         print (cc.is_alive)
         del cc
@@ -412,8 +477,17 @@ while True:
     if not auction_parse_thread.is_alive():
         print(auction_parse_thread.is_alive)
         del auction_parse_thread        
-        auction_parse_thread=ParseThread(search_url, 'story.csv', driver, telegrambot,  600, 'rivals.json', 'jdict.json')
+        auction_parse_thread=ParseThread(search_url, 'story.csv', driver, telegrambot,  3600, 'rivals.json', 'jdict.json')
         auction_parse_thread.start()
-    sleep(60)
-    config.read("conf.ini")
+    if not c_config.is_alive():
+        print(c_config.is_alive)
+        del c_config        
+        c_config=ChangeConfig()
+        c_config.start()
+    if not getm.is_alive():
+        print(getm.is_alive)
+        del getm        
+        getm=GetMess(bot_token)
+        getm.start()
 
+    sleep(60)
